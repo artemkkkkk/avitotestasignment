@@ -6,12 +6,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"log"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"avitotask/internal/apperr"
+	"avitotask/internal/applog"
 	"avitotask/internal/domain"
 	"avitotask/internal/service"
 	"avitotask/internal/store"
@@ -69,11 +70,24 @@ func (s *Server) Routes() *http.ServeMux {
 	return mux
 }
 
+// wrap = логирование запроса (внешний слой) + recover (внутренний слой).
 func (s *Server) wrap(next http.HandlerFunc) http.HandlerFunc {
+	logged := applog.HTTPMiddleware(s.recoverMW(next))
+	return func(w http.ResponseWriter, r *http.Request) {
+		logged.ServeHTTP(w, r)
+	}
+}
+
+func (s *Server) recoverMW(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				log.Printf("panic: %v", rec)
+				applog.Error("panic recovered",
+					"request_id", w.Header().Get("X-Request-ID"),
+					"method", r.Method,
+					"path", r.URL.Path,
+					"panic", fmt.Sprintf("%v", rec),
+				)
 				writeError(w, apperr.Internal("internal server error"))
 			}
 		}()
@@ -133,9 +147,30 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// writeError логирует ошибку: 4xx как Warn (бизнес-отказ), 5xx и unhandled как Error.
+// request_id берётся из заголовка, который проставил middleware логирования.
 func writeError(w http.ResponseWriter, err error) {
+	reqID := w.Header().Get("X-Request-ID")
+
 	var appErr apperr.Error
 	if errors.As(err, &appErr) {
+		if appErr.Status >= 500 {
+			applog.Error("request failed with server error",
+				"request_id", reqID,
+				"code", appErr.Code,
+				"message", appErr.Message,
+				"status", appErr.Status,
+				"error", err.Error(),
+			)
+		} else {
+			applog.Warn("request rejected",
+				"request_id", reqID,
+				"code", appErr.Code,
+				"message", appErr.Message,
+				"status", appErr.Status,
+			)
+		}
+
 		writeJSON(w, appErr.Status, map[string]any{
 			"error": map[string]any{
 				"code":    appErr.Code,
@@ -146,7 +181,10 @@ func writeError(w http.ResponseWriter, err error) {
 		return
 	}
 
-	log.Printf("unhandled error: %v", err)
+	applog.Error("unhandled error",
+		"request_id", reqID,
+		"error", err.Error(),
+	)
 	writeJSON(w, http.StatusInternalServerError, map[string]any{
 		"error": map[string]any{
 			"code":    "INTERNAL_ERROR",

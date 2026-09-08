@@ -10,6 +10,8 @@ type Config struct {
 	DBDSN      string
 	BaseURL    string
 	AdminToken string
+	LogLevel   string
+	LogFormat  string
 
 	SeedDemo bool
 
@@ -29,6 +31,8 @@ func Load() Config {
 		DBDSN:                getEnv("DB_DSN", "postgres://app:app@localhost:5432/avito_kitchen?sslmode=disable"),
 		BaseURL:              getEnv("BASE_URL", "http://localhost:8080"),
 		AdminToken:           getEnv("ADMIN_TOKEN", "admin-token"),
+		LogLevel:             getEnv("LOG_LEVEL", "info"),
+		LogFormat:            getEnv("LOG_FORMAT", "json"),
 		SeedDemo:             getBool("SEED_DEMO", true),
 		DemoExternalID:       getEnv("DEMO_EXTERNAL_ID", "demo-pizza"),
 		DemoRestaurantName:   getEnv("DEMO_RESTAURANT_NAME", "Пицца Мама"),

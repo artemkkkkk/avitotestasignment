@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"time"
 
+	"avitotask/internal/applog"
 	"avitotask/internal/config"
 	"avitotask/internal/httpapi"
 	"avitotask/internal/service"
@@ -19,8 +20,14 @@ import (
 )
 
 func main() {
-	log.Println("=== starting api ===")
 	cfg := config.Load()
+	applog.Init(cfg.LogLevel, cfg.LogFormat)
+
+	applog.Info("starting api",
+		"http_addr", cfg.HTTPAddr,
+		"base_url", cfg.BaseURL,
+		"seed_demo", cfg.SeedDemo,
+	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -32,8 +39,10 @@ func main() {
 	defer pool.Close()
 
 	if err := waitDB(ctx, pool); err != nil {
-		log.Fatalf("db is not ready: %v", err)
+		applog.Error("database is not available", "error", err.Error())
+		os.Exit(1)
 	}
+	applog.Info("database connected")
 
 	st := store.New(pool)
 
@@ -53,8 +62,10 @@ func main() {
 			MinOrderCents:    cfg.DemoMinOrderCents,
 		})
 		if err != nil {
-			log.Fatalf("seed demo: %v", err)
+			applog.Error("seed demo failed", "error", err.Error())
+			os.Exit(1)
 		}
+		applog.Info("demo restaurant seeded", "external_id", cfg.DemoExternalID)
 	}
 
 	orderService := service.NewOrderService(st, service.NewHTTPConfirmer(), cfg.BaseURL)
@@ -75,11 +86,12 @@ func main() {
 
 	go func() {
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("http server error: %v", err)
+			applog.Error("http server error", "error", err.Error())
+			os.Exit(1)
 		}
 	}()
 
-	log.Printf("api started on %s", cfg.HTTPAddr)
+	applog.Info("api started", "addr", cfg.HTTPAddr)
 
 	<-ctx.Done()
 
@@ -87,7 +99,7 @@ func main() {
 	defer cancel()
 
 	_ = httpServer.Shutdown(shutdownCtx)
-	log.Println("api stopped")
+	applog.Info("api stopped")
 }
 
 func waitDB(ctx context.Context, pool *pgxpool.Pool) error {

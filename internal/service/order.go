@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"avitotask/internal/apperr"
+	"avitotask/internal/applog"
 	"avitotask/internal/domain"
 	"avitotask/internal/store"
 
@@ -102,14 +103,34 @@ func (s *OrderService) SyncMenu(ctx context.Context, restaurantID uuid.UUID, req
 }
 
 func (s *OrderService) Pay(ctx context.Context, token uuid.UUID) error {
-	return s.repo.PayOrderByToken(ctx, token)
+	if err := s.repo.PayOrderByToken(ctx, token); err != nil {
+		return err
+	}
+	applog.Info("payment accepted", "payment_token", token.String())
+	return nil
 }
 
 func (s *OrderService) CancelByUser(ctx context.Context, orderID uuid.UUID) error {
-	return s.repo.CancelOrderByUser(ctx, orderID)
+	if err := s.repo.CancelOrderByUser(ctx, orderID); err != nil {
+		return err
+	}
+	applog.Info("order cancelled by user", "order_id", orderID.String())
+	return nil
 }
 
 func (s *OrderService) RestaurantAction(ctx context.Context, restaurantID, orderID uuid.UUID, action RestaurantAction, reason string) error {
+	if err := s.restaurantAction(ctx, restaurantID, orderID, action, reason); err != nil {
+		return err
+	}
+	applog.Info("order status changed by restaurant",
+		"order_id", orderID.String(),
+		"restaurant_id", restaurantID.String(),
+		"action", string(action),
+	)
+	return nil
+}
+
+func (s *OrderService) restaurantAction(ctx context.Context, restaurantID, orderID uuid.UUID, action RestaurantAction, reason string) error {
 	switch action {
 	case ActionPreparing:
 		return s.repo.RestaurantChangeStatus(ctx, restaurantID, orderID, "preparing", []string{"paid"}, reason)
@@ -121,6 +142,19 @@ func (s *OrderService) RestaurantAction(ctx context.Context, restaurantID, order
 		return s.repo.RestaurantChangeStatus(ctx, restaurantID, orderID, "cancelled", []string{"paid", "preparing", "delivering"}, reason)
 	}
 	return apperr.BadRequest("unknown action")
+}
+
+// compensate откатывает резерв и переводит заказ в терминальный статус.
+// Ошибка компенсации критична (риск «висящего» резерва) — логируется как Error.
+func (s *OrderService) compensate(ctx context.Context, orderID uuid.UUID, status, reason string) {
+	if err := s.repo.RejectOrder(ctx, orderID, status, reason); err != nil {
+		applog.Error("failed to compensate order",
+			"order_id", orderID.String(),
+			"target_status", status,
+			"reason", reason,
+			"error", err.Error(),
+		)
+	}
 }
 
 func (s *OrderService) CreateOrder(ctx context.Context, in CreateOrderInput) (CreateOrderResult, error) {
@@ -150,6 +184,10 @@ func (s *OrderService) CreateOrder(ctx context.Context, in CreateOrderInput) (Cr
 			return res, err
 		}
 		if existing != nil {
+			applog.Info("order replayed by idempotency key",
+				"idempotency_key", in.IdempotencyKey,
+				"order_id", existing.ID.String(),
+			)
 			return CreateOrderResult{Order: *existing, Replayed: true}, nil
 		}
 	}
@@ -176,10 +214,20 @@ func (s *OrderService) CreateOrder(ctx context.Context, in CreateOrderInput) (Cr
 		return res, err
 	}
 
+	applog.Info("order draft created",
+		"order_id", draft.OrderID.String(),
+		"restaurant_id", draft.RestaurantID.String(),
+		"items", len(in.Items),
+	)
+
 	details := map[string]any{"order_id": draft.OrderID.String()}
 
 	if draft.ConfirmationURL == nil || *draft.ConfirmationURL == "" {
-		_ = s.repo.RejectOrder(ctx, draft.OrderID, "rejected_by_restaurant", "confirmation url is not configured")
+		applog.Warn("restaurant has no confirmation url",
+			"order_id", draft.OrderID.String(),
+			"restaurant_id", draft.RestaurantID.String(),
+		)
+		s.compensate(ctx, draft.OrderID, "rejected_by_restaurant", "confirmation url is not configured")
 		return res, apperr.WithDetails(
 			apperr.New(http.StatusConflict, "CONFIRMATION_URL_MISSING", "restaurant confirmation url is not configured"),
 			details,
@@ -207,7 +255,12 @@ func (s *OrderService) CreateOrder(ctx context.Context, in CreateOrderInput) (Cr
 		Items:           confirmItems,
 	})
 	if err != nil {
-		_ = s.repo.RejectOrder(ctx, draft.OrderID, "expired", "confirmation timeout")
+		applog.Warn("restaurant confirmation failed",
+			"order_id", draft.OrderID.String(),
+			"confirmation_url", *draft.ConfirmationURL,
+			"error", err.Error(),
+		)
+		s.compensate(ctx, draft.OrderID, "expired", "confirmation timeout")
 		return res, apperr.WithDetails(
 			apperr.New(http.StatusConflict, "CONFIRMATION_TIMEOUT", "restaurant did not respond"),
 			details,
@@ -215,12 +268,21 @@ func (s *OrderService) CreateOrder(ctx context.Context, in CreateOrderInput) (Cr
 	}
 
 	if !confirmation.Confirmed {
-		_ = s.repo.RejectOrder(ctx, draft.OrderID, "rejected_by_restaurant", confirmation.Comment)
+		applog.Warn("restaurant rejected order",
+			"order_id", draft.OrderID.String(),
+			"comment", confirmation.Comment,
+		)
+		s.compensate(ctx, draft.OrderID, "rejected_by_restaurant", confirmation.Comment)
 		return res, apperr.WithDetails(
 			apperr.New(http.StatusConflict, "RESTAURANT_REJECTED", "restaurant cannot fulfill the order"),
 			details,
 		)
 	}
+
+	applog.Info("restaurant confirmed order",
+		"order_id", draft.OrderID.String(),
+		"external_order_ref", confirmation.ExternalOrderRef,
+	)
 
 	paymentToken := uuid.New()
 	paymentURL := s.baseURL + "/mock/pay/" + paymentToken.String()
@@ -236,6 +298,11 @@ func (s *OrderService) CreateOrder(ctx context.Context, in CreateOrderInput) (Cr
 	if err != nil {
 		return res, err
 	}
+
+	applog.Info("order moved to awaiting_payment",
+		"order_id", draft.OrderID.String(),
+		"payment_url", paymentURL,
+	)
 
 	order, err := s.repo.GetOrderByID(ctx, draft.OrderID)
 	if err != nil {

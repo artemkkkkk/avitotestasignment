@@ -1,6 +1,7 @@
 package store
 
 import (
+	"avitotask/internal/applog"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -445,7 +446,7 @@ func (s *Store) GetRestaurantByAPIKeyHash(ctx context.Context, keyHash string) (
 		return domain.Restaurant{}, fmt.Errorf("get restaurant by api key: %w", err)
 	}
 
-	_, _ = s.pool.Exec(
+	if _, err := s.pool.Exec(
 		ctx,
 		`
 		UPDATE restaurant_api_keys
@@ -453,7 +454,9 @@ func (s *Store) GetRestaurantByAPIKeyHash(ctx context.Context, keyHash string) (
 		WHERE key_hash = $1
 		`,
 		keyHash,
-	)
+	); err != nil {
+		applog.Debug("failed to update api key last_used_at", "error", err.Error())
+	}
 
 	return r, nil
 }
@@ -1457,10 +1460,27 @@ func (s *Store) ProcessOutbox(ctx context.Context) error {
 
 	for _, event := range events {
 		if err := s.sendOutboxEvent(ctx, event); err != nil {
-			_ = s.MarkOutboxFailed(ctx, event.ID, err.Error())
+			applog.Warn("outbox event delivery failed",
+				"event_id", event.ID.String(),
+				"event_type", event.EventType,
+				"restaurant_id", event.RestaurantID.String(),
+				"error", err.Error(),
+			)
+			if markErr := s.MarkOutboxFailed(ctx, event.ID, err.Error()); markErr != nil {
+				applog.Error("failed to mark outbox event as failed",
+					"event_id", event.ID.String(),
+					"error", markErr.Error(),
+				)
+			}
 			continue
 		}
-		_ = s.MarkOutboxSent(ctx, event.ID)
+
+		if markErr := s.MarkOutboxSent(ctx, event.ID); markErr != nil {
+			applog.Error("failed to mark outbox event as sent",
+				"event_id", event.ID.String(),
+				"error", markErr.Error(),
+			)
+		}
 	}
 
 	return nil
@@ -1614,6 +1634,8 @@ func (s *Store) ExpireOrders(ctx context.Context) error {
 		if tag.RowsAffected() == 0 {
 			continue
 		}
+
+		applog.Info("order expired", "order_id", id.String())
 
 		if err := restockTx(ctx, tx, id); err != nil {
 			return err

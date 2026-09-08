@@ -11,11 +11,18 @@ import (
 	"strconv"
 	"time"
 
+	"avitotask/internal/applog"
 	"avitotask/internal/hmacsign"
 )
 
 func main() {
-	log.Println("=== starting restaurant-demo ===")
+	applog.Init(getEnv("LOG_LEVEL", "info"), getEnv("LOG_FORMAT", "json"))
+
+	applog.Info("starting restaurant-demo",
+		"webhook_addr", getEnv("WEBHOOK_ADDR", ":8081"),
+		"core_base_url", getEnv("CORE_BASE_URL", "http://localhost:8080"),
+	)
+
 	coreBaseURL := getEnv("CORE_BASE_URL", "http://localhost:8080")
 	apiKey := getEnv("RESTAURANT_API_KEY", "demo-key")
 	addr := getEnv("WEBHOOK_ADDR", ":8081")
@@ -26,20 +33,26 @@ func main() {
 	autoProcessPaid := getBool("AUTO_PROCESS_PAID_ORDERS", true)
 
 	if err := waitCore(coreBaseURL); err != nil {
-		log.Fatalf("core api is not available: %v", err)
+		applog.Error("core api is not available", "error", err.Error())
+		os.Exit(1)
 	}
 
 	if err := register(coreBaseURL, apiKey, publicBaseURL); err != nil {
-		log.Fatalf("failed to register demo restaurant: %v", err)
+		applog.Error("failed to register demo restaurant", "error", err.Error())
+		os.Exit(1)
 	}
+	applog.Info("demo restaurant registered",
+		"confirmation_url", publicBaseURL+"/confirm-order",
+		"webhook_url", publicBaseURL+"/webhook/events",
+	)
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /health", logWrap(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-	})
+	}))
 
-	mux.HandleFunc("POST /confirm-order", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("POST /confirm-order", logWrap(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -49,6 +62,7 @@ func main() {
 		if secret != "" {
 			signature := r.Header.Get("X-Avito-Kitchen-Signature")
 			if signature == "" || !hmacsign.Verify(secret, body, signature) {
+				applog.Warn("confirm-order: invalid signature")
 				http.Error(w, "invalid signature", http.StatusUnauthorized)
 				return
 			}
@@ -58,6 +72,8 @@ func main() {
 			OrderID string `json:"order_id"`
 		}
 		_ = json.Unmarshal(body, &req)
+
+		applog.Info("confirmation request received", "order_id", req.OrderID)
 
 		confirmed := autoConfirm && !simulateReject
 
@@ -73,10 +89,15 @@ func main() {
 			resp["comment"] = "demo restaurant rejected the order"
 		}
 
-		writeJSON(w, http.StatusOK, resp)
-	})
+		applog.Info("confirmation response sent",
+			"order_id", req.OrderID,
+			"confirmed", confirmed,
+		)
 
-	mux.HandleFunc("POST /webhook/events", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, resp)
+	}))
+
+	mux.HandleFunc("POST /webhook/events", logWrap(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "bad request", http.StatusBadRequest)
@@ -86,6 +107,7 @@ func main() {
 		if secret != "" {
 			signature := r.Header.Get("X-Avito-Kitchen-Signature")
 			if signature != "" && !hmacsign.Verify(secret, body, signature) {
+				applog.Warn("webhook: invalid signature")
 				http.Error(w, "invalid signature", http.StatusUnauthorized)
 				return
 			}
@@ -101,20 +123,33 @@ func main() {
 		}
 
 		if err := json.Unmarshal(body, &event); err != nil {
+			applog.Warn("webhook: invalid payload", "error", err.Error())
 			http.Error(w, "invalid payload", http.StatusBadRequest)
 			return
 		}
+
+		applog.Info("webhook received",
+			"event_type", event.EventType,
+			"order_id", event.Data.Order.ID,
+		)
 
 		if event.EventType == "order.paid" && autoProcessPaid && event.Data.Order.ID != "" {
 			go processOrder(coreBaseURL, apiKey, event.Data.Order.ID)
 		}
 
 		writeJSON(w, http.StatusOK, map[string]string{"status": "accepted"})
-	})
+	}))
 
-	log.Printf("restaurant demo started on %s", addr)
+	applog.Info("restaurant demo started", "addr", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatal(err)
+	}
+}
+
+func logWrap(next http.HandlerFunc) http.HandlerFunc {
+	h := applog.HTTPMiddleware(next)
+	return func(w http.ResponseWriter, r *http.Request) {
+		h.ServeHTTP(w, r)
 	}
 }
 
@@ -196,6 +231,8 @@ func register(coreBaseURL, apiKey, publicBaseURL string) error {
 		return fmt.Errorf("sync menu: %w", err)
 	}
 
+	applog.Info("menu synced", "categories", 2)
+
 	return nil
 }
 
@@ -206,10 +243,14 @@ func processOrder(coreBaseURL, apiKey, orderID string) {
 		time.Sleep(700 * time.Millisecond)
 		path := fmt.Sprintf("/api/v1/restaurant/orders/%s/%s", orderID, step)
 		if err := callCore(coreBaseURL, apiKey, http.MethodPost, path, nil); err != nil {
-			log.Printf("failed to move order %s to %s: %v", orderID, step, err)
+			applog.Error("failed to move order",
+				"order_id", orderID,
+				"step", step,
+				"error", err.Error(),
+			)
 			return
 		}
-		log.Printf("order %s moved to %s", orderID, step)
+		applog.Info("order moved", "order_id", orderID, "step", step)
 	}
 }
 

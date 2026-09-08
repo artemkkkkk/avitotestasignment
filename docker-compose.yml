@@ -45,6 +45,8 @@ services:
       DEMO_WEBHOOK_URL: "http://restaurant-demo:8081/webhook/events"
       DEMO_DELIVERY_FEE_CENTS: "19900"
       DEMO_MIN_ORDER_CENTS: "10000"
+      LOG_LEVEL: "info"
+      LOG_FORMAT: "json"
     ports:
       - "8080:8080"
     depends_on:
@@ -66,6 +68,8 @@ services:
       AUTO_CONFIRM: "true"
       SIMULATE_REJECT: "false"
       AUTO_PROCESS_PAID_ORDERS: "true"
+      LOG_LEVEL: "info"
+      LOG_FORMAT: "json"
     ports:
       - "8081:8081"
     depends_on:
