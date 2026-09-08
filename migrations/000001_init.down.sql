@@ -1,0 +1,9 @@
+DROP TABLE IF EXISTS outbox_events;
+DROP TABLE IF EXISTS order_status_history;
+DROP TABLE IF EXISTS order_items;
+DROP TABLE IF EXISTS orders;
+DROP TABLE IF EXISTS menu_items;
+DROP TABLE IF EXISTS menu_categories;
+DROP TABLE IF EXISTS customers;
+DROP TABLE IF EXISTS restaurant_api_keys;
+DROP TABLE IF EXISTS restaurants;

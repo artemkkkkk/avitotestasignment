@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>Avito.Kitchen UI</title>
+    <style>
+        body { font-family: system-ui, sans-serif; margin: 0; background: #f5f5f7; color: #222; }
+        header { background: #0af; color: #fff; padding: 12px 20px; display: flex; gap: 16px; align-items: center; }
+        header b { font-size: 18px; }
+        nav button { background: #fff; border: 0; padding: 8px 14px; border-radius: 8px; cursor: pointer; }
+        nav button.active { background: #222; color: #fff; }
+        main { padding: 20px; max-width: 1100px; margin: 0 auto; }
+        .tab { display: none; }
+        .tab.active { display: block; }
+        .card { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+        .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; margin-bottom: 8px; }
+        label { display: flex; flex-direction: column; font-size: 12px; gap: 4px; }
+        input, textarea, select { padding: 8px; border: 1px solid #ccc; border-radius: 8px; font-size: 14px; }
+        textarea { width: 100%; min-height: 140px; font-family: monospace; }
+        button.act { background: #0af; border: 0; color: #fff; padding: 8px 12px; border-radius: 8px; cursor: pointer; }
+        button.ok { background: #2a2; border: 0; color: #fff; padding: 8px 12px; border-radius: 8px; cursor: pointer; }
+        button.danger { background: #e33; border: 0; color: #fff; padding: 8px 12px; border-radius: 8px; cursor: pointer; }
+        button:disabled { opacity: .4; cursor: not-allowed; }
+        table { border-collapse: collapse; width: 100%; font-size: 14px; margin: 8px 0; }
+        td, th { border: 1px solid #ddd; padding: 6px 8px; text-align: left; }
+        pre#log { background: #111; color: #0f0; padding: 12px; border-radius: 12px; max-height: 260px; overflow: auto; font-size: 12px; }
+        .muted { color: #777; font-size: 12px; }
+        .badge { padding: 2px 8px; border-radius: 10px; background: #eee; font-size: 12px; }
+        code { background: #eee; padding: 2px 6px; border-radius: 6px; word-break: break-all; }
+    </style>
+</head>
+<body>
+<header>
+    <b>Avito.Kitchen</b>
+    <nav>
+        <button data-tab="client" class="active">Клиент</button>
+        <button data-tab="restaurant">Ресторан</button>
+        <button data-tab="admin">Админ</button>
+    </nav>
+    <span class="muted" id="base"></span>
+</header>
+<main>
+
+    <!-- ===================== CLIENT ===================== -->
+    <section id="tab-client" class="tab active">
+        <div class="card">
+            <h3>Заведения</h3>
+            <div class="row">
+                <label>Поиск<input id="rq"></label>
+                <label>Категория<input id="rc"></label>
+                <label><input type="checkbox" id="ronly" checked> только открытые</label>
+                <button class="act" onclick="loadRestaurants()">Показать</button>
+            </div>
+            <div id="restaurants"></div>
+        </div>
+
+        <div class="card">
+            <h3>Меню и корзина</h3>
+            <div id="menu" class="muted">Выберите заведение → «Меню»</div>
+            <h4>Корзина</h4>
+            <div id="cart"></div>
+            <h4>Покупатель</h4>
+            <div class="row">
+                <label>Имя<input id="cname" value="Иван"></label>
+                <label>Телефон<input id="cphone" value="+79990000000"></label>
+                <label>Адрес<input id="caddr" value="Москва, ул. Ленина, 1"></label>
+                <label>external_user_id<input id="cuser" value="user-1"></label>
+            </div>
+            <p><button class="act" onclick="createOrder()">Создать заказ (резерв + подтверждение ресторана)</button></p>
+            <div id="orderResult"></div>
+        </div>
+
+        <div class="card">
+            <h3>Мои заказы</h3>
+            <button class="act" onclick="refreshMyOrders()">Обновить</button>
+            <div id="myorders"></div>
+        </div>
+    </section>
+
+    <!-- ===================== RESTAURANT ===================== -->
+    <section id="tab-restaurant" class="tab">
+        <div class="card">
+            <h3>Подключение заведения</h3>
+            <div class="row">
+                <label>API-ключ<input id="rkey" value="demo-key" style="width:320px"></label>
+                <button class="act" onclick="loadMe()">Профиль</button>
+                <button class="ok" onclick="setOpen(true)">Открыть</button>
+                <button class="danger" onclick="setOpen(false)">Закрыть</button>
+            </div>
+            <div id="meprofile"></div>
+        </div>
+
+        <div class="card">
+            <h3>Заказы</h3>
+            <div class="row">
+                <label>Статус
+                    <select id="rstatus">
+                        <option value="">оплаченные и далее</option>
+                        <option value="paid">paid</option>
+                        <option value="preparing">preparing</option>
+                        <option value="delivering">delivering</option>
+                        <option value="completed">completed</option>
+                        <option value="cancelled">cancelled</option>
+                    </select>
+                </label>
+                <button class="act" onclick="loadRestaurantOrders()">Обновить</button>
+            </div>
+            <div id="rorders"></div>
+        </div>
+
+        <div class="card">
+            <h3>Синхронизация меню (upsert по external_id)</h3>
+            <textarea id="syncjson"></textarea>
+            <p><button class="act" onclick="syncMenu()">Синхронизировать</button></p>
+        </div>
+    </section>
+
+    <!-- ===================== ADMIN ===================== -->
+    <section id="tab-admin" class="tab">
+        <div class="card">
+            <h3>Админ</h3>
+            <label>X-Admin-Token<input id="atoken" value="admin-token" style="width:320px"></label>
+        </div>
+
+        <div class="card">
+            <h3>Создать заведение</h3>
+            <div class="row">
+                <label>Название<input id="aname" value="Новое кафе"></label>
+                <label>Категория<input id="acat" value="cafe"></label>
+                <label>confirmation_url<input id="aconf" style="width:260px" value="http://restaurant-demo:8081/confirm-order"></label>
+                <label>webhook_url<input id="aweb" style="width:260px" value="http://restaurant-demo:8081/webhook/events"></label>
+                <label>webhook_secret<input id="asec" value="demo-secret"></label>
+                <label>Доставка, коп.<input id="afee" type="number" value="19900"></label>
+                <label>Мин. заказ, коп.<input id="amin" type="number" value="0"></label>
+            </div>
+            <p><button class="act" onclick="adminCreate()">Создать и выдать ключ</button></p>
+            <div id="acreate"></div>
+        </div>
+
+        <div class="card">
+            <h3>Заведения</h3>
+            <button class="act" onclick="adminList()">Показать</button>
+            <div id="alist"></div>
+        </div>
+
+        <div class="card">
+            <h3>Ключи</h3>
+            <div class="row">
+                <label>restaurant_id<input id="keyrest" style="width:300px"></label>
+                <button class="act" onclick="adminIssueKey()">Выпустить ключ</button>
+            </div>
+            <div class="row">
+                <label>key_id<input id="keyid" style="width:300px"></label>
+                <button class="danger" onclick="adminRevokeKey()">Отозвать</button>
+            </div>
+            <div id="keyres"></div>
+        </div>
+    </section>
+
+    <div class="card">
+        <h3>Лог запросов</h3>
+        <pre id="log"></pre>
+    </div>
+</main>
+
+<script>
+    const $ = id => document.getElementById(id);
+    const BASE = location.origin;
+    $('base').textContent = BASE;
+
+    document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+        document.querySelectorAll('nav button').forEach(x => x.classList.remove('active'));
+        document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+        b.classList.add('active');
+        $('tab-' + b.dataset.tab).classList.add('active');
+    });
+
+    function esc(s) {
+        return String(s ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    }
+    const money = c => (c / 100).toFixed(2) + ' руб.';
+
+    function log(line) {
+        const el = $('log');
+        el.textContent += new Date().toLocaleTimeString() + '  ' + line + '\n';
+        el.scrollTop = el.scrollHeight;
+    }
+
+    async function api(method, path, opts = {}) {
+        const { body, key, admin, extraHeaders } = opts;
+        const headers = { 'Content-Type': 'application/json', ...(extraHeaders || {}) };
+        if (key) headers['Authorization'] = 'Bearer ' + key;
+        if (admin) headers['X-Admin-Token'] = $('atoken').value;
+
+        log('-> ' + method + ' ' + path + (body ? ' ' + JSON.stringify(body) : ''));
+        const resp = await fetch(BASE + path, {
+            method,
+            headers,
+            body: body ? JSON.stringify(body) : undefined
+        });
+        const text = await resp.text();
+        let data = null;
+        try { data = JSON.parse(text); } catch (e) { data = text; }
+        log('<- ' + resp.status + ' ' + text.slice(0, 500));
+        return { status: resp.status, data };
+    }
+
+    /* ---------------- client ---------------- */
+
+    let cart = [];
+    let currentRestaurant = null;
+    let cartRestaurant = null;
+    let myOrderIds = JSON.parse(localStorage.getItem('myOrders') || '[]');
+    const saveOrders = () => localStorage.setItem('myOrders', JSON.stringify(myOrderIds));
+
+    async function loadRestaurants() {
+        const q = new URLSearchParams();
+        if ($('rq').value) q.set('query', $('rq').value);
+        if ($('rc').value) q.set('category', $('rc').value);
+        if ($('ronly').checked) q.set('open_now', 'true');
+        const { data } = await api('GET', '/api/v1/restaurants?' + q.toString());
+        $('restaurants').innerHTML = (data.items || []).map(r => `
+    <div class="card">
+      <b>${esc(r.name)}</b>
+      <span class="badge">${esc(r.category || '')}</span>
+      <span class="badge">${r.is_open ? 'открыто' : 'закрыто'}</span>
+      <div class="muted">${esc(r.address || '')} · доставка ${money(r.delivery_fee_cents)} · минимум ${money(r.min_order_cents)}</div>
+      <button class="act" onclick="loadMenu('${r.id}')">Меню</button>
+    </div>`).join('') || '<div class="muted">Ничего не найдено</div>';
+    }
+
+    async function loadMenu(id) {
+        if (cart.length && cartRestaurant && cartRestaurant !== id) {
+            log('cart cleared: restaurant changed');
+            cart = [];
+            renderCart();
+        }
+        currentRestaurant = id;
+        const { data } = await api('GET', '/api/v1/restaurants/' + id + '/menu');
+        $('menu').innerHTML = (data.categories || []).map(c => `
+    <h4>${esc(c.name)}</h4>
+    <table>
+      <tr><th>Блюдо</th><th>Цена</th><th>Остаток</th><th></th></tr>
+      ${(c.items || []).map(i => {
+            const canAdd = i.is_available && (i.stock_quantity === null || i.stock_quantity > 0);
+            return `<tr>
+          <td>${esc(i.name)}${i.is_available ? '' : ' <span class="badge">недоступно</span>'}</td>
+          <td>${money(i.price_cents)}</td>
+          <td>${i.stock_quantity === null ? '∞' : i.stock_quantity}</td>
+          <td><button class="act" ${canAdd ? '' : 'disabled'}
+            onclick="addToCart('${i.id}','${esc(i.name)}',${i.price_cents})">В корзину</button></td>
+        </tr>`;
+        }).join('')}
+    </table>`).join('') || '<div class="muted">Меню пусто</div>';
+    }
+
+    function addToCart(id, name, price) {
+        const found = cart.find(c => c.menu_item_id === id);
+        if (found) found.qty++;
+        else cart.push({ menu_item_id: id, name, price_cents: price, qty: 1 });
+        cartRestaurant = currentRestaurant;
+        renderCart();
+    }
+
+    function renderCart() {
+        if (!cart.length) {
+            $('cart').innerHTML = '<span class="muted">Пусто</span>';
+            return;
+        }
+        $('cart').innerHTML =
+            '<div class="muted">Заведение корзины: <code>' + cartRestaurant + '</code></div>' +
+            '<table><tr><th>Блюдо</th><th>Кол-во</th><th>Сумма</th><th></th></tr>' +
+            cart.map((c, i) => `<tr>
+      <td>${esc(c.name)}</td><td>${c.qty}</td><td>${money(c.price_cents * c.qty)}</td>
+      <td><button class="danger" onclick="cart.splice(${i},1);renderCart()">Убрать</button></td>
+    </tr>`).join('') + '</table>';
+    }
+
+    async function createOrder() {
+        if (!currentRestaurant) { alert('Сначала откройте меню заведения'); return; }
+        if (!cart.length) { alert('Корзина пуста'); return; }
+        if (cartRestaurant !== currentRestaurant) {
+            alert('Корзина собрана для другого заведения — очистите её или вернитесь в его меню');
+            return;
+        }
+
+        const body = {
+            restaurant_id: currentRestaurant,
+            customer: {
+                external_user_id: $('cuser').value || null,
+                name: $('cname').value,
+                phone: $('cphone').value,
+                address: $('caddr').value
+            },
+            items: cart.map(c => ({ menu_item_id: c.menu_item_id, quantity: c.qty })),
+            payment_method: 'card'
+        };
+
+        const { status, data } = await api('POST', '/api/v1/orders', {
+            body,
+            extraHeaders: { 'Idempotency-Key': crypto.randomUUID() }
+        });
+
+        if (status === 201) {
+            cart = [];
+            renderCart();
+            myOrderIds.unshift(data.id);
+            saveOrders();
+            $('orderResult').innerHTML = orderCard(data);
+        } else {
+            $('orderResult').innerHTML = '<div class="card"><b>Ошибка ' + status + ':</b><pre>' + esc(JSON.stringify(data, null, 2)) + '</pre></div>';
+        }
+    }
+
+    function orderCard(o) {
+        return `<div class="card">
+    <b>Заказ</b> <code>${o.id}</code> <span class="badge">${o.status}</span>
+    <div>Итого: ${money(o.total_cents)}</div>
+    <div class="muted">${(o.items || []).map(i => esc(i.name) + ' x' + i.quantity).join(', ')}</div>
+    ${o.payment_url ? '<button class="ok" onclick="payOrder(\'' + o.payment_url + '\')">Оплатить</button>' : ''}
+    <button class="act" onclick="refreshMyOrders()">Обновить статус</button>
+    ${o.status === 'awaiting_payment' ? '<button class="danger" onclick="cancelOrder(\'' + o.id + '\')">Отменить</button>' : ''}
+  </div>`;
+    }
+
+    async function payOrder(url) {
+        const path = url.startsWith(BASE) ? url.slice(BASE.length) : url;
+        const { status } = await api('POST', path + '/pay');
+        if (status === 200) refreshMyOrders();
+    }
+
+    async function cancelOrder(id) {
+        await api('POST', '/api/v1/orders/' + id + '/cancel');
+        refreshMyOrders();
+    }
+
+    async function refreshMyOrders() {
+        const cards = [];
+        for (const id of myOrderIds) {
+            const { status, data } = await api('GET', '/api/v1/orders/' + id);
+            if (status === 200) cards.push(orderCard(data));
+        }
+        $('myorders').innerHTML = cards.join('') || '<div class="muted">Заказов пока нет</div>';
+    }
+
+    /* ---------------- restaurant ---------------- */
+
+    async function loadMe() {
+        const { data } = await api('GET', '/api/v1/restaurant/me', { key: $('rkey').value });
+        $('meprofile').innerHTML = '<pre>' + esc(JSON.stringify(data, null, 2)) + '</pre>';
+    }
+
+    async function setOpen(v) {
+        await api('PATCH', '/api/v1/restaurant/me', { key: $('rkey').value, body: { is_open: v } });
+        loadMe();
+    }
+
+    async function loadRestaurantOrders() {
+        const st = $('rstatus').value;
+        const { data } = await api('GET', '/api/v1/restaurant/orders' + (st ? '?status=' + st : ''), { key: $('rkey').value });
+        $('rorders').innerHTML = (data.items || []).map(o => `
+    <div class="card">
+      <code>${o.id}</code> <span class="badge">${o.status}</span> ${money(o.total_cents)}
+      <div class="muted">${(o.items || []).map(i => esc(i.name) + ' x' + i.quantity).join(', ')}</div>
+      ${o.status === 'paid' ? '<button class="act" onclick="rOrder(\'' + o.id + '\',\'preparing\')">Начать готовить</button>' : ''}
+      ${o.status === 'preparing' ? '<button class="act" onclick="rOrder(\'' + o.id + '\',\'delivering\')">В доставку</button>' : ''}
+      ${o.status === 'delivering' ? '<button class="ok" onclick="rOrder(\'' + o.id + '\',\'complete\')">Завершить</button>' : ''}
+      ${['paid','preparing','delivering'].includes(o.status) ? '<button class="danger" onclick="rOrder(\'' + o.id + '\',\'cancel\')">Отменить</button>' : ''}
+    </div>`).join('') || '<div class="muted">Заказов нет</div>';
+    }
+
+    async function rOrder(id, action) {
+        await api('POST', '/api/v1/restaurant/orders/' + id + '/' + action, { key: $('rkey').value, body: { reason: 'manual action' } });
+        loadRestaurantOrders();
+    }
+
+    async function syncMenu() {
+        let body;
+        try { body = JSON.parse($('syncjson').value); } catch (e) { alert('Невалидный JSON'); return; }
+        await api('POST', '/api/v1/restaurant/menu/sync', { key: $('rkey').value, body });
+    }
+
+    /* ---------------- admin ---------------- */
+
+    async function adminCreate() {
+        const { status, data } = await api('POST', '/api/v1/admin/restaurants', {
+            admin: true,
+            body: {
+                name: $('aname').value,
+                category: $('acat').value,
+                confirmation_url: $('aconf').value,
+                webhook_url: $('aweb').value,
+                webhook_secret: $('asec').value,
+                delivery_fee_cents: +$('afee').value,
+                min_order_cents: +$('amin').value,
+                is_open: true
+            }
+        });
+        if (status === 201) {
+            $('acreate').innerHTML = `<div class="card"><b>Создано</b>
+      <div>restaurant_id: <code>${data.restaurant.id}</code></div>
+      <div>api_key_id: <code>${data.api_key_id}</code></div>
+      <div>api_key: <code>${esc(data.api_key)}</code> (показывается один раз)</div></div>`;
+            $('keyrest').value = data.restaurant.id;
+            $('keyid').value = data.api_key_id;
+        }
+    }
+
+    async function adminList() {
+        const { data } = await api('GET', '/api/v1/admin/restaurants', { admin: true });
+        $('alist').innerHTML = '<table><tr><th>Название</th><th>Открыто</th><th>id</th><th>Действия</th></tr>' +
+            (data.items || []).map(r => `<tr>
+      <td>${esc(r.name)}</td>
+      <td>${r.is_open ? 'да' : 'нет'}</td>
+      <td><code>${r.id}</code></td>
+      <td>
+        <button class="ok" onclick="adminToggle('${r.id}','is_open',true)">открыть</button>
+        <button class="danger" onclick="adminToggle('${r.id}','is_open',false)">закрыть</button>
+      </td>
+    </tr>`).join('') + '</table>';
+    }
+
+    async function adminToggle(id, field, val) {
+        await api('PATCH', '/api/v1/admin/restaurants/' + id, { admin: true, body: { [field]: val } });
+        adminList();
+    }
+
+    async function adminIssueKey() {
+        const { status, data } = await api('POST', '/api/v1/admin/restaurants/' + $('keyrest').value + '/api-keys', {
+            admin: true, body: { name: 'ui-key' }
+        });
+        if (status === 201) {
+            $('keyres').innerHTML = `<div class="card">key_id: <code>${data.id}</code><div>api_key: <code>${esc(data.api_key)}</code></div></div>`;
+            $('keyid').value = data.id;
+        }
+    }
+
+    async function adminRevokeKey() {
+        await api('POST', '/api/v1/admin/api-keys/' + $('keyid').value + '/revoke', { admin: true });
+    }
+
+    /* ---------------- init ---------------- */
+
+    $('syncjson').value = JSON.stringify({
+        categories: [
+            {
+                external_id: "pizza",
+                name: "Пицца",
+                sort_order: 10,
+                items: [
+                    { external_id: "pizza-margarita", name: "Маргарита", price_cents: 59900, is_available: true, stock_quantity: 10, sort_order: 10 },
+                    { external_id: "pizza-pepperoni", name: "Пепперони", price_cents: 69900, is_available: true, stock_quantity: 0, sort_order: 20 }
+                ]
+            }
+        ]
+    }, null, 2);
+
+    renderCart();
+    loadRestaurants();
+    refreshMyOrders();
+</script>
+</body>
+</html>

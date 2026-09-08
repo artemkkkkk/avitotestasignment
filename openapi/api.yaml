@@ -1,0 +1,744 @@
+openapi: 3.0.3
+info:
+  title: Avito.Kitchen API
+  version: 1.0.0
+  description: |
+    MVP API сервиса Авито.Кухня.
+
+    Роли:
+      * клиент — публичные эндпоинты без авторизации;
+      * заведение — `Authorization: Bearer <api_key>`;
+      * администратор платформы — `X-Admin-Token`.
+
+    Флоу заказа:
+      1. `POST /api/v1/orders` — проверка наличия по данным платформы, резерв товара
+         и синхронный запрос подтверждения у заведения;
+      2. при подтверждении заказ переходит в `awaiting_payment`, клиент получает `payment_url`;
+      3. оплата (в MVP — мок) через `POST /mock/pay/{paymentToken}/pay`;
+      4. после оплаты заведение двигает заказ: `preparing` → `delivering` → `completed`.
+
+servers:
+  - url: http://localhost:8080
+    description: локальный стенд
+
+tags:
+  - name: public
+  - name: orders
+  - name: mock-payment
+  - name: restaurant
+  - name: admin
+
+paths:
+  /health:
+    get:
+      tags: [public]
+      operationId: health
+      summary: Health check
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /api/v1/restaurants:
+    get:
+      tags: [public]
+      operationId: listRestaurants
+      summary: Список активных заведений
+      parameters:
+        - name: query
+          in: query
+          schema: {type: string}
+        - name: category
+          in: query
+          schema: {type: string}
+        - name: open_now
+          in: query
+          schema: {type: boolean}
+        - name: page
+          in: query
+          schema: {type: integer, minimum: 1, default: 1}
+        - name: page_size
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/RestaurantPublic'}
+                  page: {type: integer}
+                  page_size: {type: integer}
+                  total: {type: integer}
+        "500": {$ref: '#/components/responses/InternalError'}
+
+  /api/v1/restaurants/{restaurantId}:
+    get:
+      tags: [public]
+      operationId: getRestaurant
+      summary: Карточка заведения (публичная, без внутренних URL)
+      parameters: [{$ref: '#/components/parameters/RestaurantId'}]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RestaurantPublic'}
+        "404": {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/restaurants/{restaurantId}/menu:
+    get:
+      tags: [public]
+      operationId: getRestaurantMenu
+      summary: Меню заведения
+      parameters: [{$ref: '#/components/parameters/RestaurantId'}]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Menu'}
+        "404": {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/orders:
+    post:
+      tags: [orders]
+      operationId: createOrder
+      summary: Создание заказа (запрос на оплату)
+      description: |
+        Проверяет наличие по данным платформы, резервирует товар,
+        синхронно запрашивает подтверждение у заведения.
+        При подтверждении возвращает заказ в статусе `awaiting_payment` и `payment_url`.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateOrderRequest'}
+      responses:
+        "201":
+          description: Заказ подтверждён заведением и готов к оплате
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Order'}
+        "400": {$ref: '#/components/responses/BadRequest'}
+        "409":
+          description: |
+            Бизнес-ошибка: ресторан закрыт, нет остатков, не достигнут минимум,
+            ресторан отклонил заказ или не ответил вовремя.
+            В `details` может быть `order_id` отклонённого заказа.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ErrorResponse'}
+        "500": {$ref: '#/components/responses/InternalError'}
+
+  /api/v1/orders/{orderId}:
+    get:
+      tags: [orders]
+      operationId: getOrder
+      summary: Просмотр заказа
+      parameters: [{$ref: '#/components/parameters/OrderId'}]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Order'}
+        "404": {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/orders/{orderId}/cancel:
+    post:
+      tags: [orders]
+      operationId: cancelOrder
+      summary: Отмена заказа пользователем (до оплаты)
+      parameters: [{$ref: '#/components/parameters/OrderId'}]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StatusResponse'}
+        "404": {$ref: '#/components/responses/NotFound'}
+        "409": {$ref: '#/components/responses/Conflict'}
+
+  /mock/pay/{paymentToken}:
+    get:
+      tags: [mock-payment]
+      operationId: mockPayPage
+      summary: Мок-страница оплаты
+      parameters: [{$ref: '#/components/parameters/PaymentToken'}]
+      responses:
+        "200":
+          description: HTML-страница с кнопкой оплаты
+          content:
+            text/html:
+              schema: {type: string}
+
+  /mock/pay/{paymentToken}/pay:
+    post:
+      tags: [mock-payment]
+      operationId: mockPay
+      summary: Мок-оплата заказа
+      parameters: [{$ref: '#/components/parameters/PaymentToken'}]
+      responses:
+        "200":
+          description: Оплата прошла
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StatusResponse'}
+        "404": {$ref: '#/components/responses/NotFound'}
+        "409": {$ref: '#/components/responses/Conflict'}
+
+  /api/v1/restaurant/me:
+    get:
+      tags: [restaurant]
+      operationId: restaurantMe
+      summary: Профиль текущего заведения (включая внутренние URL)
+      security: [{bearerAuth: []}]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RestaurantInternal'}
+        "401": {$ref: '#/components/responses/Unauthorized'}
+    patch:
+      tags: [restaurant]
+      operationId: updateRestaurantMe
+      summary: Обновление профиля заведения
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateRestaurantRequest'}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RestaurantInternal'}
+        "401": {$ref: '#/components/responses/Unauthorized'}
+
+  /api/v1/restaurant/menu/sync:
+    post:
+      tags: [restaurant]
+      operationId: syncMenu
+      summary: Синхронизация меню (upsert по external_id)
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SyncMenuRequest'}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StatusResponse'}
+        "400": {$ref: '#/components/responses/BadRequest'}
+        "401": {$ref: '#/components/responses/Unauthorized'}
+
+  /api/v1/restaurant/orders:
+    get:
+      tags: [restaurant]
+      operationId: listRestaurantOrders
+      summary: Заказы заведения
+      security: [{bearerAuth: []}]
+      parameters:
+        - name: status
+          in: query
+          schema: {$ref: '#/components/schemas/OrderStatus'}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/Order'}
+        "401": {$ref: '#/components/responses/Unauthorized'}
+
+  /api/v1/restaurant/orders/{orderId}/preparing:
+    post:
+      tags: [restaurant]
+      operationId: restaurantStartPreparing
+      summary: Начать готовить (из paid)
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: '#/components/parameters/OrderId'}]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StatusResponse'}
+        "401": {$ref: '#/components/responses/Unauthorized'}
+        "404": {$ref: '#/components/responses/NotFound'}
+        "409": {$ref: '#/components/responses/Conflict'}
+
+  /api/v1/restaurant/orders/{orderId}/delivering:
+    post:
+      tags: [restaurant]
+      operationId: restaurantStartDelivering
+      summary: Передать в доставку (из preparing)
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: '#/components/parameters/OrderId'}]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StatusResponse'}
+        "401": {$ref: '#/components/responses/Unauthorized'}
+        "404": {$ref: '#/components/responses/NotFound'}
+        "409": {$ref: '#/components/responses/Conflict'}
+
+  /api/v1/restaurant/orders/{orderId}/complete:
+    post:
+      tags: [restaurant]
+      operationId: restaurantCompleteOrder
+      summary: Завершить заказ (из delivering)
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: '#/components/parameters/OrderId'}]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StatusResponse'}
+        "401": {$ref: '#/components/responses/Unauthorized'}
+        "404": {$ref: '#/components/responses/NotFound'}
+        "409": {$ref: '#/components/responses/Conflict'}
+
+  /api/v1/restaurant/orders/{orderId}/cancel:
+    post:
+      tags: [restaurant]
+      operationId: restaurantCancelOrder
+      summary: Отменить заказ рестораном (paid/preparing/delivering)
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: '#/components/parameters/OrderId'}]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: {type: string}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StatusResponse'}
+        "401": {$ref: '#/components/responses/Unauthorized'}
+        "404": {$ref: '#/components/responses/NotFound'}
+        "409": {$ref: '#/components/responses/Conflict'}
+
+  /api/v1/admin/restaurants:
+    post:
+      tags: [admin]
+      operationId: adminCreateRestaurant
+      summary: Подключить заведение и выдать первый API-ключ
+      security: [{adminToken: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminCreateRestaurantRequest'}
+      responses:
+        "201":
+          description: Заведение создано, ключ показан один раз
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AdminCreateRestaurantResponse'}
+        "400": {$ref: '#/components/responses/BadRequest'}
+        "401": {$ref: '#/components/responses/Unauthorized'}
+    get:
+      tags: [admin]
+      operationId: adminListRestaurants
+      summary: Список всех заведений (с внутренними URL)
+      security: [{adminToken: []}]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items: {$ref: '#/components/schemas/RestaurantInternal'}
+        "401": {$ref: '#/components/responses/Unauthorized'}
+
+  /api/v1/admin/restaurants/{restaurantId}:
+    patch:
+      tags: [admin]
+      operationId: adminUpdateRestaurant
+      summary: Активация/деактивация и открытие/закрытие заведения
+      security: [{adminToken: []}]
+      parameters: [{$ref: '#/components/parameters/RestaurantId'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AdminUpdateRestaurantRequest'}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/RestaurantInternal'}
+        "401": {$ref: '#/components/responses/Unauthorized'}
+        "404": {$ref: '#/components/responses/NotFound'}
+
+  /api/v1/admin/restaurants/{restaurantId}/api-keys:
+    post:
+      tags: [admin]
+      operationId: adminCreateAPIKey
+      summary: Выпустить новый API-ключ заведения
+      security: [{adminToken: []}]
+      parameters: [{$ref: '#/components/parameters/RestaurantId'}]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string}
+      responses:
+        "201":
+          description: Ключ создан
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/APIKeyCreated'}
+        "401": {$ref: '#/components/responses/Unauthorized'}
+
+  /api/v1/admin/api-keys/{keyId}/revoke:
+    post:
+      tags: [admin]
+      operationId: adminRevokeAPIKey
+      summary: Отозвать API-ключ
+      security: [{adminToken: []}]
+      parameters: [{$ref: '#/components/parameters/KeyId'}]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StatusResponse'}
+        "401": {$ref: '#/components/responses/Unauthorized'}
+        "404": {$ref: '#/components/responses/NotFound'}
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: API-ключ заведения
+    adminToken:
+      type: apiKey
+      in: header
+      name: X-Admin-Token
+
+  parameters:
+    RestaurantId:
+      name: restaurantId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    OrderId:
+      name: orderId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    PaymentToken:
+      name: paymentToken
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    KeyId:
+      name: keyId
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+
+  responses:
+    BadRequest:
+      description: Некорректный запрос
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+    Unauthorized:
+      description: Нет или невалидные учетные данные
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+    NotFound:
+      description: Не найдено
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+    Conflict:
+      description: Конфликт бизнес-правил
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+    InternalError:
+      description: Внутренняя ошибка
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/ErrorResponse'}
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              example: ITEMS_UNAVAILABLE
+            message:
+              type: string
+            details: {}
+
+    StatusResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: paid
+
+    OrderStatus:
+      type: string
+      enum:
+        - pending_confirmation
+        - awaiting_payment
+        - paid
+        - preparing
+        - delivering
+        - completed
+        - cancelled
+        - rejected_by_restaurant
+        - expired
+
+    RestaurantPublic:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        external_id: {type: string, nullable: true}
+        name: {type: string}
+        description: {type: string, nullable: true}
+        category: {type: string, nullable: true}
+        address: {type: string, nullable: true}
+        phone: {type: string, nullable: true}
+        delivery_fee_cents: {type: integer}
+        min_order_cents: {type: integer}
+        estimated_delivery_minutes: {type: integer, nullable: true}
+        is_open: {type: boolean}
+
+    RestaurantInternal:
+      allOf:
+        - $ref: '#/components/schemas/RestaurantPublic'
+        - type: object
+          properties:
+            is_active: {type: boolean}
+            confirmation_url: {type: string, nullable: true}
+            webhook_url: {type: string, nullable: true}
+
+    MenuItem:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        category_id: {type: string, format: uuid, nullable: true}
+        external_id: {type: string, nullable: true}
+        name: {type: string}
+        description: {type: string, nullable: true}
+        price_cents: {type: integer}
+        is_available: {type: boolean}
+        stock_quantity: {type: integer, nullable: true, description: null = бесконечный остаток}
+        sort_order: {type: integer}
+
+    MenuCategory:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        external_id: {type: string, nullable: true}
+        name: {type: string}
+        sort_order: {type: integer}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/MenuItem'}
+
+    Menu:
+      type: object
+      properties:
+        restaurant_id: {type: string, format: uuid}
+        categories:
+          type: array
+          items: {$ref: '#/components/schemas/MenuCategory'}
+
+    OrderItemInput:
+      type: object
+      required: [menu_item_id, quantity]
+      properties:
+        menu_item_id: {type: string, format: uuid}
+        quantity: {type: integer, minimum: 1}
+
+    CustomerInput:
+      type: object
+      required: [name, phone, address]
+      properties:
+        external_user_id: {type: string, nullable: true}
+        name: {type: string}
+        phone: {type: string}
+        address: {type: string}
+        comment: {type: string, nullable: true}
+
+    CreateOrderRequest:
+      type: object
+      required: [restaurant_id, customer, items]
+      properties:
+        restaurant_id: {type: string, format: uuid}
+        customer: {$ref: '#/components/schemas/CustomerInput'}
+        items:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/OrderItemInput'}
+        payment_method:
+          type: string
+          example: card
+
+    OrderItem:
+      type: object
+      properties:
+        menu_item_id: {type: string, format: uuid}
+        name: {type: string}
+        price_cents: {type: integer}
+        quantity: {type: integer}
+        total_cents: {type: integer}
+
+    Order:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        restaurant_id: {type: string, format: uuid}
+        status: {$ref: '#/components/schemas/OrderStatus'}
+        subtotal_cents: {type: integer}
+        delivery_fee_cents: {type: integer}
+        total_cents: {type: integer}
+        payment_method: {type: string}
+        payment_url: {type: string, nullable: true}
+        expires_at: {type: string, format: date-time, nullable: true}
+        restaurant_confirmed_at: {type: string, format: date-time, nullable: true}
+        restaurant_external_ref: {type: string, nullable: true}
+        paid_at: {type: string, format: date-time, nullable: true}
+        created_at: {type: string, format: date-time}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/OrderItem'}
+
+    SyncItem:
+      type: object
+      required: [external_id, name, price_cents]
+      properties:
+        external_id: {type: string}
+        name: {type: string}
+        description: {type: string}
+        price_cents: {type: integer}
+        is_available: {type: boolean, nullable: true}
+        stock_quantity: {type: integer, nullable: true}
+        sort_order: {type: integer}
+
+    SyncCategory:
+      type: object
+      required: [external_id, name]
+      properties:
+        external_id: {type: string}
+        name: {type: string}
+        sort_order: {type: integer}
+        items:
+          type: array
+          items: {$ref: '#/components/schemas/SyncItem'}
+
+    SyncMenuRequest:
+      type: object
+      required: [categories]
+      properties:
+        categories:
+          type: array
+          items: {$ref: '#/components/schemas/SyncCategory'}
+
+    UpdateRestaurantRequest:
+      type: object
+      properties:
+        name: {type: string, nullable: true}
+        description: {type: string, nullable: true}
+        address: {type: string, nullable: true}
+        phone: {type: string, nullable: true}
+        delivery_fee_cents: {type: integer, nullable: true}
+        min_order_cents: {type: integer, nullable: true}
+        is_open: {type: boolean, nullable: true}
+        confirmation_url: {type: string, nullable: true}
+        webhook_url: {type: string, nullable: true}
+
+    AdminCreateRestaurantRequest:
+      type: object
+      required: [name]
+      properties:
+        external_id: {type: string}
+        name: {type: string}
+        description: {type: string}
+        category: {type: string}
+        address: {type: string}
+        phone: {type: string}
+        delivery_fee_cents: {type: integer, default: 0}
+        min_order_cents: {type: integer, default: 0}
+        confirmation_url: {type: string}
+        webhook_url: {type: string}
+        webhook_secret: {type: string}
+        is_open: {type: boolean, nullable: true}
+
+    AdminCreateRestaurantResponse:
+      type: object
+      properties:
+        restaurant: {$ref: '#/components/schemas/RestaurantInternal'}
+        api_key_id: {type: string, format: uuid}
+        api_key: {type: string, description: показывается один раз}
+
+    AdminUpdateRestaurantRequest:
+      type: object
+      properties:
+        is_active: {type: boolean, nullable: true}
+        is_open: {type: boolean, nullable: true}
+
+    APIKeyCreated:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        api_key: {type: string, description: показывается один раз}
